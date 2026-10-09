@@ -4,70 +4,7 @@ const { config } = require('../../config.js');
 const { log, sleep, cleanExit } = require("../utils");
 const { BMK, getSlotCustomName } = require("../helpers");
 const { extractPurse } = require('../info/purse');
-
-/**
- * Parse window title from different formats (1.8.9 vs 1.21.11).
- * Hypixel often sends NBT-style JSON: { type:"compound", value:{ translate:{ type:"string", value:"..." } } } }
- */
-function parseWindowTitle(windowTitle) {
-    const unwrap = (node) => {
-        if (node == null) return '';
-        if (typeof node === 'string') return node;
-        if (typeof node !== 'object') return String(node);
-        if (node.extra && Array.isArray(node.extra)) {
-            return node.extra.map((e) => unwrap(e)).join('');
-        }
-        if (node.text != null && typeof node.text === 'string') return node.text;
-        if (typeof node.translate === 'string') return node.translate;
-        if (node.translate != null && typeof node.translate === 'object') {
-            return unwrap(node.translate);
-        }
-        if (node.type === 'string' && node.value != null) return String(node.value);
-        if (node.type === 'compound' && node.value != null) return unwrap(node.value);
-        if (node.value != null && typeof node.value === 'object') return unwrap(node.value);
-        return '';
-    };
-
-    try {
-        if (typeof windowTitle === 'string') {
-            try {
-                const parsed = JSON.parse(windowTitle);
-                const inner = unwrap(parsed);
-                return inner || windowTitle;
-            } catch {
-                return windowTitle;
-            }
-        }
-        if (typeof windowTitle === 'object') {
-            const inner = unwrap(windowTitle);
-            return inner || JSON.stringify(windowTitle);
-        }
-        return String(windowTitle);
-    } catch (error) {
-        log(`[List] Error parsing window title: ${error.message}`, "warn");
-        return String(windowTitle);
-    }
-}
-
-/** Create Auction button: prefer golden_horse_armor without custom_name; else any golden_horse_armor in the GUI. */
-function findCreateAuctionSlotIndex(slots) {
-    if (!slots?.length) return null;
-    let namedMatch = null;
-    let anyArmor = null;
-    for (let si = 0; si < Math.min(slots.length, 54); si++) {
-        const s = slots[si];
-        const customName = getSlotCustomName(s)?.replace(/§[0-9a-fk-or]/gi, '').toLowerCase();
-        if (customName?.includes('create auction')) {
-            namedMatch = si;
-            break;
-        }
-        if (s?.name !== 'golden_horse_armor') continue;
-        if (!s.componentMap?.has('custom_name')) return si;
-        anyArmor = si;
-    }
-    if (namedMatch !== null) return namedMatch;
-    return anyArmor;
-}
+const { parseWindowTitle, stripColors, waitForWindowItem } = require('../windowItems');
 
 /** Non-empty slot count + footer row (27–44) + any slot named like horse armor (for logs). */
 function manageAuctionsSlotSnapshot(slots) {
@@ -109,88 +46,41 @@ function logManageAuctionsFullDump(slots, label) {
     }
 }
 
-/**
- * Poll currentWindow.slots for golden_horse_armor.
- * `openWindowPacket` is the raw open_window payload (for windowId vs currentWindow.id checks).
- */
+/** Find Create Auction from Mineflayer's window cache or raw 1.21.11 container packets. */
 async function waitForCreateAuctionSlot(bot, openWindowPacket, maxMs = 8000) {
     const packetWid = openWindowPacket?.windowId;
     const t0 = Date.now();
-    let lastProgressLog = t0;
-    let iterations = 0;
-    let warnedIdMismatch = false;
 
     log(
         `[List] MA find Create Auction: start packetWid=${packetWid} cw.id=${bot.flayer.currentWindow?.id ?? 'null'} cw.slotsLen=${bot.flayer.currentWindow?.slots?.length ?? 'n/a'}`,
         "debug"
     );
 
-    return new Promise((resolve) => {
-        const finish = (idx = null) => {
-            clearTimeout(timer);
-            clearInterval(poller);
-            bot.flayer._client.removeListener('packet', onPacket);
-            resolve(idx);
-        };
-
-        const scanCurrentWindow = () => {
-            iterations++;
-            const cw = bot.flayer.currentWindow;
-            const slots = cw?.slots;
-            const sameWindow = packetWid == null || cw?.id == null || Number(cw.id) === Number(packetWid);
-
-            if (!warnedIdMismatch && packetWid != null && cw?.id != null && !sameWindow) {
-                warnedIdMismatch = true;
-                log(
-                    `[List] MA warn: currentWindow.id (${cw.id}) !== open_window packet windowId (${packetWid}) — waiting for matching mineflayer window`,
-                    "warn"
-                );
-            }
-
-            if (sameWindow && slots?.length) {
-                const idx = findCreateAuctionSlotIndex(slots);
-                if (idx !== null) {
-                    log(`[List] MA found Create Auction at slot ${idx} after ${Date.now() - t0}ms (${iterations} scans)`, "debug");
-                    finish(idx);
-                    return true;
-                }
-            }
-
-            if (Date.now() - lastProgressLog >= 600) {
-                lastProgressLog = Date.now();
-                if (!slots?.length) {
-                    log(
-                        `[List] MA progress ${Date.now() - t0}ms: waiting for mineflayer slot data (cw=${cw ? 'present' : 'null'})`,
-                        "debug"
-                    );
-                } else {
-                    const snap = manageAuctionsSlotSnapshot(slots);
-                    log(`[List] MA progress ${Date.now() - t0}ms: ${snap.text}`, "debug");
-                }
-            }
-
-            return false;
-        };
-
-        const onPacket = (_data, meta) => {
-            const n = meta?.name;
-            if (n !== 'set_slot' && n !== 'set_container_slot' && n !== 'window_items' && n !== 'set_container_content') return;
-            scanCurrentWindow();
-        };
-
-        const poller = setInterval(scanCurrentWindow, 50);
-        const timer = setTimeout(() => {
-            log(`[List] MA gave up after ${maxMs}ms (${iterations} scans)`, "warn");
-            const finalSlots = bot.flayer.currentWindow?.slots;
-            const snap = manageAuctionsSlotSnapshot(finalSlots);
-            log(`[List] MA final snapshot: ${snap.text}`, "warn");
-            logManageAuctionsFullDump(finalSlots, "timeout");
-            finish(null);
-        }, maxMs);
-
-        bot.flayer._client.on('packet', onPacket);
-        scanCurrentWindow();
+    const result = await waitForWindowItem(bot, packetWid, (slot) => {
+        if (slot?.name !== 'golden_horse_armor') return false;
+        const customName = getSlotCustomName(slot);
+        if (!customName) return true;
+        return stripColors(customName).toLowerCase().includes('create auction');
+    }, {
+        maxMs,
+        maxSlots: 54,
+        pollMs: 50
     });
+
+    if (result) {
+        log(
+            `[List] MA found Create Auction at slot ${result.slotIndex} from ${result.source} after ${Date.now() - t0}ms`,
+            "debug"
+        );
+        return result.slotIndex;
+    }
+
+    log(`[List] MA gave up after ${maxMs}ms`, "warn");
+    const finalSlots = bot.flayer.currentWindow?.slots;
+    const snap = manageAuctionsSlotSnapshot(finalSlots);
+    log(`[List] MA final snapshot: ${snap.text}`, "warn");
+    logManageAuctionsFullDump(finalSlots, "timeout");
+    return null;
 }
 
 async function claimItem(bot, auction, type = false) {
@@ -206,14 +96,15 @@ async function claimItem(bot, auction, type = false) {
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
             log(`[List] claimItem timeout for ${auction.item_name}`, "warn");
-            bot.flayer._client.removeListener('open_window', onOpen);
-            bot.flayer.inventory.removeListener('updateSlot', onSlot);
+            cleanup();
             reject("Timeout Error | claimItem");
             return;
         }, 15000);
 
         const cleanup = () => {
             clearTimeout(timeout);
+            bot.flayer._client.removeListener('open_window', onOpen);
+            bot.flayer.inventory.removeListener('updateSlot', onSlot);
         };
 
         const onOpen = async (window) => {
@@ -234,11 +125,11 @@ async function claimItem(bot, auction, type = false) {
         const onSlot = async (slot, oldItem, newItem) => {
             try {
                 log(`[List] Slot update at slot ${slot}`, "sys", true);
+                if (!newItem) return;
                 auction.slot = slot;
                 log("[List] Slot event fired, starting list process...", "sys", true);
 
-                bot.flayer._client.removeListener('open_window', onOpen);
-                clearTimeout(timeout);
+                cleanup();
 
                 await handleList(bot, auction, type).then(() => {
                     log(`[List] Successfully listed ${auction.item_name}`, "sys", true);
@@ -348,34 +239,24 @@ async function handleList(bot, auction, type) {
 
                         if (paid && time) {
                             try {
-                                await new Promise((priceResolve, priceReject) => {
-                                    const expectedPrice = auction.sellPrice.toString();
-                                    const checkPriceSlot = () => {
-                                        try {
-                                            const slot31 = bot.flayer.currentWindow?.slots?.[31];
-                                            if (!slot31) return;
-                                            const priceSlot = getSlotCustomName(slot31);
-                                            if (!priceSlot) return;
-                                            const actualPrice = priceSlot.replace(/,/g, '');
-                                            if (!actualPrice) return;
-
-                                            if (actualPrice.includes(expectedPrice)) {
-                                                log(`[List] Price validated: ${expectedPrice}`, "debug");
-                                                clearInterval(interval);
-                                                priceResolve();
-                                            }
-                                        } catch (error) {
-                                            // slot not loaded yet, keep polling
-                                        }
-                                    };
-
-                                    const interval = setInterval(checkPriceSlot, 250);
-                                    setTimeout(() => {
-                                        clearInterval(interval);
-                                        log(`[List] Price validation timeout, proceeding anyway`, "debug");
-                                        priceResolve();
-                                    }, 5000);
+                                const expectedPrice = auction.sellPrice.toString();
+                                const priceResult = await waitForWindowItem(bot, window.windowId, (slot, index) => {
+                                    if (index !== 31) return false;
+                                    const priceSlot = getSlotCustomName(slot);
+                                    if (!priceSlot) return false;
+                                    const actualPrice = stripColors(priceSlot).replace(/,/g, '');
+                                    return actualPrice.includes(expectedPrice);
+                                }, {
+                                    maxMs: 1000,
+                                    maxSlots: 32,
+                                    pollMs: 25
                                 });
+
+                                if (priceResult) {
+                                    log(`[List] Price validated: ${expectedPrice} from ${priceResult.source}`, "debug");
+                                } else {
+                                    log(`[List] Price validation skipped after 1000ms, proceeding anyway`, "debug");
+                                }
                             } catch (err) {
                                 log(`[List] Failed to validate price: ${err}`, "warn");
                                 cleanup();
@@ -474,7 +355,6 @@ async function handleList(bot, auction, type) {
                         }
 
                         embed.setURL(`https://sky.coflnet.com/auction/${auction.uuid}`);
-                        embed.setThumbnail(`https://SamBaksht.space/item/NEW_YEAR_CAKE`);
                         await bot.hook.send(embed);
 
                         let relistTime = config.customization.listTime;
@@ -642,7 +522,7 @@ async function getNewPrice(bot, auction) {
                 const { ignoreList, fallBack } = checkDeviation(data);
 
                 if (ignoreList) {
-                    reject(`Ignoring relist of ${auction.item_name} | Deviation Mismatch`);
+                    reject(`\nIgnoring relist of ${auction.item_name} | Median 400% higher than LBIN\n```);
                     return;
                 }
 
@@ -749,10 +629,19 @@ async function handleSign(bot, value, window, auction) {
 async function startRelist(bot, uuid) {
     try {
         log(`[List] Starting relist for ${uuid}`, "sys", true);
+        if (bot.relistPipeline.some(auction => auction.uuid === uuid)) {
+            log(`[List] Relist for ${uuid} already queued, skipping duplicate`, "debug", true);
+            return;
+        }
+
         const { auctions, claimableAuctions, expiredAuctions } = await findAuctions(bot);
 
         for (const expiredAuction of expiredAuctions) {
             if (uuid === expiredAuction.uuid) {
+                if (bot.relistPipeline.some(auction => auction.uuid === expiredAuction.uuid)) {
+                    log(`[List] Relist for ${expiredAuction.item_name} already queued after refresh, skipping duplicate`, "debug", true);
+                    break;
+                }
                 bot.relistPipeline.push(expiredAuction);
                 log(`[List] Added ${expiredAuction.item_name} to relist pipeline`, "sys", true);
                 break;

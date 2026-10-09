@@ -8,9 +8,79 @@ const { handleTaxList, handleTaxClaim } = require('../auction/taxes');
 const soldRegex = /^\[Auction\] (.+?) bought (.+?) for ([\d,]+) coins CLICK$/;
 const { claimAuction } = require("../auction/main");
 const { extractPurse } = require('../info/purse');
-const { claimItem } = require('../auction/list.js');
+const { claimItem, findAuctions } = require('../auction/list.js');
 const listRegex = /^(.+?) created (.+?) for (.+?) at ([\d,]+) coins!$/;
 const listRegex2 = /^(.+?) listed (.+?) for (.+?) at ([\d,]+) coins!$/;
+
+function findClickCommand(node, seen = new WeakSet(), depth = 0) {
+    if (!node) return null;
+    if (depth > 8) return null;
+    if (typeof node === 'string') return null;
+    if (Array.isArray(node)) {
+        for (const entry of node) {
+            const nested = findClickCommand(entry, seen, depth + 1);
+            if (nested) return nested;
+        }
+        return null;
+    }
+    if (typeof node !== 'object') return null;
+    if (seen.has(node)) return null;
+    seen.add(node);
+
+    const clickEvent = node.clickEvent ?? node.click_event;
+    const value = clickEvent?.value;
+    if (typeof value === 'string' && value.length > 0) return value;
+
+    if (typeof node.toJSON === 'function') {
+        try {
+            const json = node.toJSON();
+            if (json && json !== node) {
+                const nested = findClickCommand(json, seen, depth + 1);
+                if (nested) return nested;
+            }
+        } catch {
+            // Some chat objects expose toJSON but throw for partial components.
+        }
+    }
+
+    const candidates = ['extra', 'with', 'value', 'json', 'children', 'siblings'];
+    for (const key of candidates) {
+        if (!Object.prototype.hasOwnProperty.call(node, key)) continue;
+        const nested = findClickCommand(node[key], seen, depth + 1);
+        if (nested) return nested;
+    }
+
+    for (const key of Object.keys(node)) {
+        if (candidates.includes(key) || key === 'clickEvent' || key === 'click_event') continue;
+        const nested = findClickCommand(node[key], seen, depth + 1);
+        if (nested) return nested;
+    }
+
+    return null;
+}
+
+function parseAuctionIdFromCommand(clickCommand) {
+    if (typeof clickCommand !== 'string') return null;
+    const match = clickCommand.match(/\/viewauction\s+([0-9a-fA-F-]{16,40})/);
+    if (!match || !match[1]) return null;
+    return match[1].replace(/-/g, '');
+}
+
+async function findSoldAuctionId(bot, itemName, price) {
+    const normalizedPrice = Number(String(price).replace(/,/g, ''));
+    if (!Number.isFinite(normalizedPrice)) return null;
+
+    try {
+        const { claimableAuctions } = await findAuctions(bot);
+        const match = claimableAuctions.find((auction) => {
+            return auction.item_name === itemName && Number(auction.highest_bid_amount) === normalizedPrice;
+        });
+        return match?.uuid ?? null;
+    } catch (error) {
+        log(`[Message] Failed to resolve sold auction via API: ${error.message}`, "warn");
+        return null;
+    }
+}
 
 function addOrdinalSuffix(i) {
     var j = i % 10,
@@ -82,7 +152,7 @@ async function handleMessageEvent(message, bot) {
                 const price = claim[1];
                 const itemName = claim[2];
                 const username = claim[3];
-
+                log(bot.claimCell[itemName], "sys", true);
                 let embed = await bot.hook.embed(
                     "Claimed Sold Item!",
                     `Collected \`${price} coins\` for selling \`${itemName}\` to \`${username}\` [(click)](https://sky.coflnet.com/auction/${bot.claimCell[itemName]?.[price.replace(/,/g, '')] || 'unknown'})`,
@@ -97,6 +167,9 @@ async function handleMessageEvent(message, bot) {
                     text: `Eternity | ${BMK(purse, 1)} Coin Purse`,
                     iconURL: "https://cdn.discordapp.com/attachments/1340811695769124914/1341163186715623474/image_1.png?ex=67b4ff0d&is=67b3ad8d&hm=26a2179b1f7709cf56aa0dfe713ea8049bc2c91857d9e03b343dab44f52ad693&"
                 });
+
+                embed.setURL(`https://sky.coflnet.com/auction/${bot.claimCell[itemName]?.[price.replace(/,/g, '')]}`);
+
                 await bot.hook.send(embed);
             } catch (claimError) {
                 log(`[Message] Claim handler error: ${claimError.message}`, "warn");
@@ -109,10 +182,18 @@ async function handleMessageEvent(message, bot) {
             try {
                 const item = soldMatch[2];
                 const price = soldMatch[3];
-                const clickEvent = message?.clickEvent?.value;
-                const auctionID = clickEvent ? clickEvent.replace('/viewauction ', '').replace(/-/g, '') : 'unknown';
+                const clickCommand = findClickCommand(message);
+                let auctionID = parseAuctionIdFromCommand(clickCommand);
 
                 log(`[Message] Sold match: ${item} for ${price}`, "debug", true);
+                if (!auctionID) {
+                    log(`[Message] Sold match missing /viewauction command for ${item}; resolving via auctions API`, "warn");
+                    auctionID = await findSoldAuctionId(bot, item, price);
+                    if (!auctionID) {
+                        log(`[Message] Unable to resolve sold auction ID for ${item}; skipping claim queue`, "warn");
+                        return;
+                    }
+                }
 
                 const auction = {
                     "item_name": item,
@@ -227,8 +308,6 @@ async function handleMessageEvent(message, bot) {
                         inline: false
                     });
                 }
-
-                embed.setThumbnail(`https://SamBaksht.space/item/${tag}`);
 
                 bot.stats.hourlyProfit.push(afterTaxProfit);
                 bot.stats.totalProfit += afterTaxProfit;

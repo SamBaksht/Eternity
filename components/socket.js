@@ -15,7 +15,7 @@ class Socket {
                 console.error("[Socket] Expected modSocketID in env, please apply before running in dev environment.");
                 cleanExit("No modSocketID in .env");
             }
-            this.id = process.env.modSocketId;
+            this.id = config.modSocketID;
         } else {
             if (config.modSocketID === "") {
                 config.modSocketID = randomUUID();
@@ -31,18 +31,31 @@ class Socket {
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 10;
         this.reconnectDelay = 5000;
+        this.reconnectTimer = null;
+        this.intentionalClose = false;
 
         log(`[Socket] Socket URL: ${this.link}`, "debug", true);
     }
 
     connect() {
         try {
+            if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+                log(`[Socket] connect() ignored; socket already active (state=${this.ws.readyState})`, "debug", true);
+                return;
+            }
+
             if (this.ws) {
                 log("[Socket] Removing existing WebSocket listeners", "debug", true);
                 this.ws.removeAllListeners();
+                try {
+                    this.ws.terminate();
+                } catch {
+                    // Socket may already be closed.
+                }
             }
 
             log("[Socket] Connecting to WebSocket...", "sys", true);
+            this.intentionalClose = false;
             this.ws = new WebSocket(this.link);
 
             this.ws.on('open', () => {
@@ -59,6 +72,11 @@ class Socket {
                         case "flip":
                             data.recieveTime = Date.now();
                             log(`[Socket] Flip received: ${data.itemName} @ ${BMK(data.startingBid)}`, "debug", true);
+
+                            if (this.bot.auctionPipeline.some(auction => auction.id === data.id)) {
+                                log(`[Socket] Duplicate flip ignored: ${data.id}`, "debug", true);
+                                break;
+                            }
 
                             this.bot.auctionPipeline.push(data);
                             let state = this.bot.state.getState();
@@ -128,6 +146,11 @@ class Socket {
             this.ws.on('close', (code, reason) => {
                 log(`[Socket] WebSocket closed. Code: ${code}, Reason: ${reason || 'none'}`, "sys");
 
+                if (this.intentionalClose) {
+                    log("[Socket] Intentional close, skipping reconnect", "debug", true);
+                    return;
+                }
+
                 if (this.bot.state.getState() === "reconnecting") {
                     log("[Socket] State is reconnecting, skipping reconnect", "debug", true);
                     return;
@@ -154,19 +177,29 @@ class Socket {
             return;
         }
 
+        if (this.reconnectTimer) {
+            log("[Socket] Reconnect already scheduled, skipping duplicate", "debug", true);
+            return;
+        }
+
         this.reconnectAttempts++;
         const delay = this.reconnectDelay * this.reconnectAttempts;
         log(`[Socket] Attempting reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`, "sys");
 
-        setTimeout(() => {
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
             this.open();
         }, delay);
     }
 
     open() {
         try {
+            if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+                log(`[Socket] open() ignored; socket already active (state=${this.ws.readyState})`, "debug", true);
+                return;
+            }
+
             log("[Socket] Opening new connection", "sys", true);
-            this.disconnect();
             this.connect();
         } catch (error) {
             log(`[Socket] open() error: ${error.message}`, "warn");
@@ -188,8 +221,13 @@ class Socket {
 
     disconnect() {
         try {
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
             if (this.ws) {
                 log("[Socket] Closing WebSocket connection", "sys", true);
+                this.intentionalClose = true;
                 this.ws.close();
             }
         } catch (error) {

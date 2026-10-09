@@ -6,8 +6,6 @@ const { buy, disableOpenWindowListener } = require("./auction/buy");
 const { claimItem } = require("./auction/list")
 const Socket = require('./socket')
 
-// I WILL ADD BETTER DOCS FOR THIS SOON 
-
 class DynamicState extends EventEmitter {
     // creates the state for the bot (e.x, spawning, mining, flipping...)
     constructor(bot, state) { 
@@ -19,6 +17,7 @@ class DynamicState extends EventEmitter {
     this.internalState = null;
     this.queue = [];
     this.actionPipeline = [];
+    this.processingLoop = false;
 
 
     //state management functions
@@ -37,7 +36,7 @@ class DynamicState extends EventEmitter {
   // checks if already handling current queue before modifying list, 
   // if so it will emit a function that will change the internal state to restart actions after current action is complete
   handleQueue(action, priority) {
-    if(this.state === "processing") {
+    if(this.state === "processing" || this.processingLoop) {
         this.emit('newAction', action, priority);
         return;
     }
@@ -53,13 +52,20 @@ class DynamicState extends EventEmitter {
 
 
   async process() {
+    if (this.processingLoop) {
+        log("process() called while already processing; ignoring duplicate actOnQueue", "debug", true);
+        return;
+    }
+    this.processingLoop = true;
     this.state = "processing"; // state flag 
+    let restartAfter = false;
+    try {
     log(`Starting ${this.queue} action!`, "sys", true)
     for (let i = 0; i < this.queue.length; i++) {
         if (this.internalState === "pipelined") { 
             log("restarting queue process", "sys");
-            this.emit("restart");
-            return;
+            restartAfter = true;
+            break;
         }
         const action = this.queue[i];
         log(`Starting ${action}`, "sys", true)
@@ -92,8 +98,7 @@ class DynamicState extends EventEmitter {
                         this.bot.flayer.removeListener('message', this.messageListener);
                     }, 250);
                     
-                    // this timer is ai generated, might be bad
-                    // Check if we need to extend the timeout
+                    // Extend the active buy window when another opportunity arrives.
                     const elapsed = Date.now() - startTime;
                     const timeLeft = remainingTime - elapsed;
                     
@@ -119,7 +124,7 @@ class DynamicState extends EventEmitter {
                 };
                 
                 this.on("nextFlip", nextFlipHandler);
-                await buy(this.bot); // could be improved 
+                await buy(this.bot);
                 this.emit("nextFlip");
                 
                 await new Promise(resolve => {
@@ -210,13 +215,20 @@ class DynamicState extends EventEmitter {
         this.queue.splice(i, 1);
         if (this.internalState === "pipelined") {
             log("Internal state is pipelined, restarting queue process!", "debug", true);
-            this.emit("restart");
-            return;
+            restartAfter = true;
+            break;
         }
         i--;
         
     }
-    this.state = "waiting";
+    } finally {
+        this.processingLoop = false;
+        if (restartAfter || this.internalState === "pipelined") {
+            this.handleRestart();
+        } else {
+            this.state = "waiting";
+        }
+    }
   }
   handleNewActions(action, priority) {
     if (!this.actionPipeline) {
@@ -227,8 +239,8 @@ class DynamicState extends EventEmitter {
             this.actionPipeline.unshift(action); // put at start of array
             } else {
             this.actionPipeline.push(action);
-            this.internalState = "pipelined";
             }
+        this.internalState = "pipelined";
         if(action != "checkDelay") {
             log(`Added ${action} to state queue!`, "debug")
         }
@@ -236,6 +248,10 @@ class DynamicState extends EventEmitter {
     }
 
   handleRestart() {
+    if (this.processingLoop) {
+        this.internalState = "pipelined";
+        return;
+    }
     for (let action of this.actionPipeline) {
         this.queue.push(action);
         }

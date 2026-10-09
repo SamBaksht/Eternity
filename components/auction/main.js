@@ -6,38 +6,8 @@ const fs = require('fs');
 const { handleTaxClaim } = require("./taxes");
 const { waitForTicks } = require("../events/tick");
 const { listWithoutTarget } = require("./taxes");
+const { parseWindowTitle } = require("../windowItems");
 const RELIST_LOSS = 0.94;
-
-/**
- * Parse window title from different formats (1.8.9 vs 1.21.11)
- */
-function parseWindowTitle(windowTitle) {
-    try {
-        if (typeof windowTitle === 'string') {
-            try {
-                const parsed = JSON.parse(windowTitle);
-                if (parsed.extra && Array.isArray(parsed.extra)) {
-                    return parsed.extra.map(e => e.text || '').join('');
-                }
-                return parsed.text || windowTitle;
-            } catch {
-                return windowTitle;
-            }
-        } else if (typeof windowTitle === 'object') {
-            if (windowTitle.extra && Array.isArray(windowTitle.extra)) {
-                return windowTitle.extra.map(e => e.text || '').join('');
-            }
-            if (windowTitle.translate) {
-                return windowTitle.translate;
-            }
-            return windowTitle.text || JSON.stringify(windowTitle);
-        }
-        return String(windowTitle);
-    } catch (error) {
-        log(`[Main] Error parsing window title: ${error.message}`, "warn");
-        return String(windowTitle);
-    }
-}
 
 async function mainEntry(bot) {
     try {
@@ -134,13 +104,13 @@ async function claimAuction(bot, auction) {
                     const taxedAmount = await handleTaxClaim(auction.highest_bid_amount);
                     bot.claimCell[auction.item_name][taxedAmount] = auction.uuid;
 
-                    // Wait for server to populate window, then click slot 31.
-                    // We use raw packet clicks so we don't need parsed slot data.
-                    await sleep(600);
-                    bot.packets.click(31, wid);
 
-                    await waitForTicks(bot, 3);
+                    await sleep(300);
                     bot.packets.click(31, wid);
+                    await sleep(250)
+                    if(bot.flayer.currentWindow) {
+                        bot.packets.click(31, wid);
+                    }
 
                     log("[Main] Clicked slot 31 during claim", "sys", true);
 
@@ -163,8 +133,7 @@ async function claimAuction(bot, auction) {
             }
         };
 
-        // Remove existing listeners and register new one
-        bot.flayer._client.removeAllListeners('open_window');
+        // Register only this claim handler; do not remove Mineflayer's internal window listener.
         bot.flayer._client.once('open_window', windowHandler);
 
         // Send the command

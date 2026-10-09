@@ -9,7 +9,19 @@ function makePackets(client, bot) {
         }
     });
 
+    client.on('set_container_content', (packet) => {
+        if (packet.stateId !== undefined) {
+            currentStateId = packet.stateId;
+        }
+    });
+
     client.on('set_slot', (packet) => {
+        if (packet.stateId !== undefined) {
+            currentStateId = packet.stateId;
+        }
+    });
+
+    client.on('set_container_slot', (packet) => {
         if (packet.stateId !== undefined) {
             currentStateId = packet.stateId;
         }
@@ -28,7 +40,8 @@ function makePackets(client, bot) {
             }
         },
 
-        // 1.21.11: cursorItem is `option HashedSlot` — null means "no item"
+        // 1.21.11: cursorItem is `option HashedSlot` — null means "no item".
+        // Sending undefined can serialize ambiguously and Hypixel may reject the click.
         click: function (slot, windowId) {
             try {
                 client.write('window_click', {
@@ -38,7 +51,7 @@ function makePackets(client, bot) {
                     mouseButton: 0,
                     mode: 0,
                     changedSlots: [],
-                    cursorItem: undefined
+                    cursorItem: null
                 });
                 this.actionID++;
             } catch (error) {
@@ -55,7 +68,7 @@ function makePackets(client, bot) {
                     mouseButton: 0,
                     mode: 1,
                     changedSlots: [],
-                    cursorItem: undefined
+                    cursorItem: null
                 });
                 this.actionID++;
             } catch (error) {

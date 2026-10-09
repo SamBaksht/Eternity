@@ -1,7 +1,7 @@
 {
-    "name": "Eternity",
+    "name": "eternity",
     "version": "1.0.0",
-    "description": "skyblock and its players are super smart!",
+    "description": "An archived event-driven Minecraft protocol client and auction-system case study",
     "main": "start.js",
     "bin": "start.js",
     "scripts": {
@@ -9,8 +9,16 @@
         "build": "pkg . --out-path dist",
         "dev": "NODE_ENV=dev node start.js"
     },
-    "author": "SamBaksht",
+    "author": "Sam Baksht",
     "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/SamBaksht/Eternity.git"
+    },
+    "homepage": "https://github.com/SamBaksht/Eternity#readme",
+    "bugs": {
+        "url": "https://github.com/SamBaksht/Eternity/issues"
+    },
     "dependencies": {
         "axios": "^1.11.0",
         "crypto": "^1.0.1",

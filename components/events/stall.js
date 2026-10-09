@@ -66,13 +66,13 @@ const MAX_RESTART_ATTEMPTS = 3;
 async function restartBot(bot, reason) {
     if (bot.state.getState() !== "reconnecting") {
         restartAttempts++;
-        log(`Restarting bot... (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS})`, "sys");
+        log(`Restarting bot... (attempt ${restartAttempts}`, "sys");
 
-        if (restartAttempts > MAX_RESTART_ATTEMPTS) {
-            log("Max restart attempts reached. Stopping.", "warn");
-            await cleanExit("Max restart attempts exceeded");
-            return;
-        }
+        // if (restartAttempts > MAX_RESTART_ATTEMPTS) {
+        //     log("Max restart attempts reached. Stopping.", "warn");
+        //     await cleanExit("Max restart attempts exceeded");
+        //     return;
+        //}
 
         const embed = await bot.hook.embed("Restarting Bot", `**Bot connection is being restarted...**\n\n**Reason:** \`${reason}\`\n**Attempt:** ${restartAttempts}/${MAX_RESTART_ATTEMPTS}`, "red");
         await bot.hook.send(embed);

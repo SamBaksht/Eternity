@@ -26,7 +26,7 @@ function listWithoutTarget(price) {
 
 function handleTaxClaim(profit) {
     if (profit < 1000000) return profit; // under 1 mil no 1% tax?
-    return profit * .98;
+    return profit * .96; // keep at 0.96 while derpy.
 }
 
 module.exports = { handleTaxList, handleTaxClaim, listWithoutTarget}

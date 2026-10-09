@@ -1,186 +1,54 @@
-# Eternity - Hypixel SkyBlock Auction Flipper
+# Eternity
 
-An automated auction house bot for Hypixel SkyBlock that finds profitable flips using Coflnet's flip finder and automatically buys, lists, and manages your auctions.
+Eternity is an automated auction-trading client I built for Hypixel SkyBlock using Node.js. It handles purchasing items, creating listings, collecting sales, and relisting expired auctions.
 
-> ⚠️ **Still in development - use at your own risk!**
+The main challenge was keeping it running without constant supervision. Market updates, game packets, chat messages, and timers all arrive independently, so the client has to track its current task while handling new information and recovering when something goes wrong.
 
-## Features
+This project is no longer operated or maintained. The source is available to document my work, and isn’t intended for use against a multiplayer service without permission.
 
-- 🤖 Automated flip buying and listing
-- 📊 Real-time Discord webhook notifications
-- 💰 Automatic tax calculations and profit tracking
-- 🔄 Auto-relist expired auctions
-- 📈 Detailed statistics (profit, slots, timings)
-- 🔗 Coflnet integration for flip finding
+## How it works
 
-## Prerequisites
+The client connects to Minecraft through Mineflayer and checks existing auctions through the Hypixel API. A WebSocket feed supplies potential purchases, which the client acts on through game commands and auction menus.
 
-Before you begin, ensure you have:
+The API, inventory packets, and chat messages each provide different information. The client combines them to track purchases and sales, update its internal state, and schedule the next action.
 
-- **Node.js** (v18 or higher) - [Download here](https://nodejs.org/)
-- **Minecraft Java Edition** with a Microsoft account
-- **Hypixel API Key** - Get one by running `/api new` on Hypixel
-- **Discord Webhook URL** (optional but recommended) - [How to create webhooks](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks)
+## Engineering
 
-## Installation
+### Coordinating asynchronous tasks
 
-1. **Clone or download this repository**
+Buying, listing, and claiming auctions all use the same game interface. Running them at the same time could interrupt a purchase or send a click to the wrong menu.
 
-```bash
-git clone https://github.com/SamBaksht/Eternity.git
-cd Eternity
-```
+I built an event-driven action queue to coordinate these tasks. It tracks the current operation and holds incoming work until the queue can handle it. Purchase requests can take priority, and additional opportunities can extend an active buying session.
 
-2. **Install dependencies**
+### Working with the Minecraft protocol
 
-```bash
-npm install
-```
+An open menu doesn’t necessarily have all its item data yet. Acting too early could leave the client working with incomplete information.
 
-3. **Configure the bot** (see Configuration section below)
+The window tracker reads both Mineflayer’s cached inventory state and raw container packets. It waits for the relevant slot or item before continuing. The client also parses formatted item names and menu titles, and constructs window-click packets using the container’s state.
 
-## Configuration
+### Recovering from failures
 
-Edit `config.json` and fill in the following **required** fields:
+The client includes checks for inactivity, disconnects, and unresponsive sessions. Restart handling closes connections, clears timers, and attempts to reconnect. The WebSocket connection has its own retry logic and checks to avoid opening duplicate connections.
 
-```json
-{
-  "webhook": "YOUR_DISCORD_WEBHOOK_URL",
-  "username": "YOUR_MINECRAFT_USERNAME",
-  "apiKey": "YOUR_HYPIXEL_API_KEY",
-  "customization": {
-    "listTime": 24
-  }
-}
-```
+### Monitoring the client
 
-### Required Fields:
+Discord webhooks report purchases, sales, errors, and restarts. A live stats panel tracks profit, latency, and runtime, alongside a scrolling log. This made it easier to investigate failures during longer sessions.
 
-- **`username`** - Your Minecraft username (must match your Microsoft account)
-- **`apiKey`** - Your Hypixel API key (get with `/api new` on Hypixel)
-- **`webhook`** - Discord webhook URL for notifications (optional but recommended)
+## Code structure
 
-### Optional Fields:
+- `components/bot.js` — Minecraft connection and session setup
+- `components/state.js` — action queue and state management
+- `components/clientPackets.js` — outgoing clicks and chat
+- `components/windowItems.js` — container tracking and item loading
+- `components/auction/` — buying, listing, claiming, and fee calculations
+- `components/socket.js` — real-time auction feed
+- `components/events/` — game events and recovery
+- `components/notiHook.js` — live Discord statistics and logs
 
-- **`modSocketID`** - Coflnet mod socket ID for advanced features
-- **`notificationHook`** - Secondary webhook for output log
-- **`listTime`** - How many hours to list items (1-48)
+## Stack
 
-> ⚠️ **Ignore all fragbot and autoEvents config options** - they are not yet implemented.
-
-## Usage
-
-### Starting the Bot
-
-```bash
-npm start
-```
-
-### First Time Setup
-
-1. Run `npm start`
-2. You'll be prompted to authenticate with Microsoft
-3. Follow the link and enter the code provided
-4. The bot will log into Hypixel and connect to Coflnet
-
-### What the Bot Does
-
-1. **Connects to Coflnet** - Receives flip suggestions based on your settings
-2. **Buys Items** - Automatically attempts to purchase profitable flips
-3. **Lists Items** - Claims bought items and lists them on the auction house
-4. **Tracks Profits** - Monitors sales and calculates profit after tax
-5. **Relists Items** - Automatically relists expired unsold items
-6. **Sends Notifications** - Updates you via Discord webhooks
-
-### Stopping the Bot
-
-- Press `Ctrl + C` in the terminal
-- The bot will safely shut down and close all connections
-
-## Commands (in console)
-
-While the bot is running, you can type commands in the console:
-
-- `stop` - Safely stops the bot
-- `status` - Shows current bot status
-- `stats` - Displays profit and auction statistics
-
-## Development Mode
-
-For developers or testing with environment variables:
-
-1. Create a `.env` file with:
-
-```env
-username=YOUR_USERNAME
-apiKey=YOUR_API_KEY
-webhook=YOUR_WEBHOOK_URL
-modSocketID=YOUR_SOCKET_ID
-listTime=24
-```
-
-2. Run in dev mode:
-
-```bash
-npm run dev
-```
-
-## Troubleshooting
-
-### Bot won't connect to Minecraft
-
-- Make sure you're using the correct Microsoft account
-- Check that your Minecraft account has access to Hypixel
-- Verify you're not already connected from another location
-
-
-### Webhook not working
-
-- Verify your webhook URL is correct
-- Check Discord channel permissions
-- Look for error messages in the console
-
-### Bot missing flips
-
-- This is normal - flips are competitive
-- Adjust your Coflnet settings for better targeting
-- Check your internet connection speed
-
-## Logs
-
-All bot activity is logged to the `log/` directory with timestamps. Check these files for detailed debugging information.
-
-## Project Structure
-
-```
-EternityClient/
-├── components/        # Bot modules
-│   ├── auction/      # Auction buying/listing logic
-│   ├── events/       # Event handlers
-│   └── info/         # Player/island info
-├── log/              # Log files
-├── config.json       # Configuration file
-├── start.js          # Entry point
-└── package.json      # Dependencies
-```
-
-## Safety & Disclaimer
-
-- This bot is **not affiliated with Hypixel or Mojang**
-- Using bots may violate Hypixel's Terms of Service
-- **Use at your own risk** - account bans are possible
-- The developers are not responsible for any consequences
+JavaScript / Node.js, Mineflayer, EventEmitter, WebSockets, REST APIs, Axios, and discord.js.
 
 ## License
 
-MIT License - See LICENSE file for details
-
-## Credits
-
-- **Author**: SamBaksht
-- **Flip Finder**: [Coflnet](https://sky.coflnet.com/)
-- **Minecraft Bot Library**: [Mineflayer](https://github.com/PrismarineJS/mineflayer)
-
----
-
-**Need help?** Check the logs in the `log/` directory or review error messages in the console.
+[MIT](LICENSE)

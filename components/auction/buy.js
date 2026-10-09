@@ -1,42 +1,9 @@
 const { log, sleep } = require('../utils');
 const { getSlotItemTag, getSlotLore } = require('../helpers');
+const { parseWindowTitle, waitForWindowSlotName } = require('../windowItems');
 
 // Store the listener function so it can be removed later
 let openWindowListener = null;
-
-/**
- * Parse window title from different formats (1.8.9 vs 1.21.11)
- * In newer versions, windowTitle may be a string or an object
- */
-function parseWindowTitle(windowTitle) {
-    try {
-        if (typeof windowTitle === 'string') {
-            // Try to parse as JSON
-            try {
-                const parsed = JSON.parse(windowTitle);
-                if (parsed.extra && Array.isArray(parsed.extra)) {
-                    return parsed.extra.map(e => e.text || '').join('');
-                }
-                return parsed.text || windowTitle;
-            } catch {
-                return windowTitle;
-            }
-        } else if (typeof windowTitle === 'object') {
-            // Object format (1.21+)
-            if (windowTitle.extra && Array.isArray(windowTitle.extra)) {
-                return windowTitle.extra.map(e => e.text || '').join('');
-            }
-            if (windowTitle.translate) {
-                return windowTitle.translate;
-            }
-            return windowTitle.text || JSON.stringify(windowTitle);
-        }
-        return String(windowTitle);
-    } catch (error) {
-        log(`[Buy] Error parsing window title: ${error.message}`, "warn");
-        return String(windowTitle);
-    }
-}
 
 /**
  * Check if window title matches expected title
@@ -135,9 +102,19 @@ function handleMessageEvent(bot, price, tag, latestItem, latestPrice) {
 async function buy(bot) {
     log(`[Buy] Initializing buy listener`, "sys", true);
 
+    if (openWindowListener && bot.flayer?._client) {
+        bot.flayer._client.removeListener('open_window', openWindowListener);
+    }
+
     // Create the listener function
     openWindowListener = async (window) => {
         try {
+            // if (bot.buyWindowBusy) {
+            //     log("[Buy] Ignoring open_window while previous buy window is still processing", "debug", true);
+            //     return;
+            // }
+            // bot.buyWindowBusy = true;
+
             log(`[Buy] Window event received: ${JSON.stringify(window.windowTitle || 'unknown')}`, "debug", true);
             bot.lastAction = Date.now();
 
@@ -164,8 +141,9 @@ async function buy(bot) {
                 bot.lastWindow = Date.now();
 
                 if (slot === 'gold_nugget') {
-                    log("[Buy] Gold nugget detected, closing window", "debug");
-                    bot.packets.closeWindow(window.windowId);
+                    log("[Buy] Gold nugget detected", "debug");
+                    windowStats(bot, bot.flayer.currentWindow, "Nugget", beforeLoad, bot.latestItem, bot.latestPrice)
+                    bot.packets.click(31, window.windowId)
                     bot.state.emit("nextFlip");
 
                 } else if (slot === 'bed' || slot === 'red_bed' || slot === 'white_bed') {
@@ -182,8 +160,8 @@ async function buy(bot) {
 
                     if (!slot) {
                         // Slots didn't load — click buy directly
-                        bot.packets.click(31, window.windowId);
-                        log(`[Buy] Blind-clicked slot 31 at ${Date.now() - beforeLoad}ms`, "debug");
+                        // bot.packets.click(31, window.windowId);
+                        // log(`[Buy] Blind-clicked slot 31 at ${Date.now() - beforeLoad}ms`, "debug");
                     } else {
                         if (bot.holding[bot.latestItem]?.[bot.latestPrice]) {
                             bot.holding[bot.latestItem][bot.latestPrice].shift();
@@ -199,11 +177,9 @@ async function buy(bot) {
                 log(`[Buy] Confirm window opened | elapsed: ${confirmWindow - bot.recieveTime}ms`, "debug");
 
                 await sleep(50);
-                for (let i = 0; i < 2; i++) {
-                    bot.packets.click(11, wid);
-                }
+                bot.packets.click(11, wid);
 
-                log(`[Buy] Clicked confirm 2x (wid=${wid}) at ${Date.now() - confirmWindow}ms`, "debug");
+                log(`[Buy] Clicked confirm (wid=${wid}) at ${Date.now() - confirmWindow}ms`, "debug");
                 bot.state.emit("nextFlip");
 
             } else {
@@ -220,15 +196,13 @@ async function buy(bot) {
             console.error('[Buy] Window handler error:', error);
             log(`[Buy] CRITICAL: Window handler error: ${error.message}`, "warn");
             bot.state.emit("nextFlip");
+        } finally {
+            bot.buyWindowBusy = false;
         }
     };
 
-    // Register the event listener
-    // In 1.21.11, mineflayer may use different event names
-    // Try 'windowOpen' first (mineflayer style), then fall back to 'open_window' (protocol)
+    // Register only this module's protocol listener; Mineflayer's own window listener must stay attached.
     try {
-        // Remove any existing listeners first
-        bot.flayer._client.removeAllListeners('open_window');
         bot.flayer._client.on('open_window', openWindowListener);
         log(`[Buy] Registered open_window listener on _client`, "debug", true);
     } catch (error) {
@@ -255,163 +229,52 @@ async function spam(bot, window) {
         let lastTick = 0;
         let checkItem;
 
-        const tickListener = async () => {
-            try {
-                if (!bot.flayer.currentWindow || lastTick > 80) {
-                    bot.flayer.removeAllListeners('physicsTick');
-                    clearInterval(checkItem);
-                    log("[Buy] Bed spam cancelled (no window or tick limit)", "sys");
-                    return;
-                }
+        // const tickListener = async () => {
+        //     log("Tick Listener Event Activated", "debug")
+        //     try {
+        //         if (!bot.flayer.currentWindow || lastTick > 80) {
+        //             bot.flayer.removeAllListeners('physicsTick');
+        //             clearInterval(checkItem);
+        //             log("[Buy] Bed spam cancelled (no window or tick limit)", "sys");
+        //             return;
+        //         }
 
-                if (lastTick % 3 === 0) {
-                    bot.packets.click(31, window.windowId, -1);
-                    bot.betterClick(31, 0, 0);
-                }
-                lastTick++;
-            } catch (tickError) {
-                log(`[Buy] Tick listener error: ${tickError.message}`, "warn");
-            }
-        };
+        //         if (lastTick % 2 === 0) {
+        //             bot.packets.click(31, window.windowId, -1);
+        //             bot.betterClick(31, 0, 0);
+        //         }
+        //         lastTick++;
+        //     } catch (tickError) {
+        //         log(`[Buy] Tick listener error: ${tickError.message}`, "warn");
+        //     }
+        // };
+        if ((ms - Date.now()) > 400) {
+            await sleep(Math.abs(ms - Date.now() - 400));
+        }
 
-        bot.flayer.on('physicsTick', tickListener);
+        let newWindowOpened = false;
 
-        let item;
-        checkItem = setInterval(() => {
-            try {
-                item = bot.flayer.currentWindow?.slots[31]?.name;
+        const confirmWindowCheck = async () => {
+            newWindowOpened = true;
+            bot.flayer._client.removeListener('open_window', confirmWindowCheck);
+        }
 
-                // Check for various bed types in 1.21
-                const isBed = item === 'bed' || item?.endsWith('_bed');
+        bot.flayer._client.on('open_window', confirmWindowCheck);
 
-                if (!isBed && item !== undefined && window.windowTitle === bot.flayer.currentWindow?.title) {
-                    bot.flayer.removeAllListeners('physicsTick');
-                    clearInterval(checkItem);
-                    log(`[Buy] Bed changed to ${item}, bed spam cancelled`, "sys");
-                    bot.flayer.closeWindow(window);
-                    return;
-                }
-
-                const currentTitle = parseWindowTitle(bot.flayer?.currentWindow?.title);
-                if (currentTitle.includes("Confirm Purchase") || !bot.flayer.currentWindow) {
-                    clearInterval(checkItem);
-                    bot.flayer.removeAllListeners('physicsTick');
-                    log("[Buy] Confirm window detected or no window, stopping spam", "debug", true);
-                }
-            } catch (intervalError) {
-                log(`[Buy] Check interval error: ${intervalError.message}`, "debug", true);
-            }
-        }, 10);
+        log(`Starting bedspam at ${ms - Date.now()}ms left in bed`, "debug")
+        let passes = 0;
+        while(bot.flayer.currentWindow && passes < 15 && !newWindowOpened) {
+        log(`Clicked at delta ${ms - Date.now()}`, "debug")
+        bot.packets.click(31, window.windowId);
+        passes++;
+        await sleep(50);
+        }
+        //bot.flayer.on('physicsTick', tickListener);
 
     } catch (error) {
         console.error("[Buy] Error during spam:", error);
         log(`[Buy] CRITICAL: Spam error: ${error.message}`, "warn");
     }
-}
-
-function itemNameFromPacketSlot(item) {
-    if (!item || item.present === false) return null;
-    if (typeof item.name === 'string' && item.name.length > 0) return item.name;
-    return null;
-}
-
-function windowIdMatches(packetWid, expected) {
-    if (packetWid === undefined || packetWid === null) return true;
-    return Number(packetWid) === Number(expected);
-}
-
-/**
- * Resolve the item id string for one slot as soon as the server sends it.
- * Uses setImmediate so we run after mineflayer applies each packet batch,
- * and listens to set_slot / window_items to read the name without waiting
- * on a slow setInterval(1) race.
- */
-async function waitForWindowSlotName(bot, windowId, slotIndex, maxMs = 400) {
-    const peekWindow = () => {
-        const w = bot.flayer.currentWindow;
-        if (!w) return null;
-        if (w.id != null && Number(w.id) !== Number(windowId)) return null;
-        const s = w.slots?.[slotIndex];
-        return s?.name ?? null;
-    };
-
-    const peekPacket = (data, meta) => {
-        const n = meta.name;
-        try {
-            if (n === 'set_slot' || n === 'set_container_slot') {
-                const wid = data.windowId ?? data.containerId;
-                if (!windowIdMatches(wid, windowId)) return null;
-                if (Number(data.slot) !== slotIndex) return null;
-                return itemNameFromPacketSlot(data.item);
-            }
-            if (n === 'window_items' || n === 'set_container_content') {
-                const wid = data.windowId ?? data.containerId;
-                if (!windowIdMatches(wid, windowId)) return null;
-                const items = data.items ?? data.slots ?? data.itemStacks;
-                if (!Array.isArray(items)) return null;
-                return itemNameFromPacketSlot(items[slotIndex]);
-            }
-        } catch {
-            return null;
-        }
-        return null;
-    };
-
-    const immediate = peekWindow();
-    if (immediate) return immediate;
-
-    return new Promise((resolve, reject) => {
-        let settled = false;
-        const deadline = Date.now() + maxMs;
-
-        const cleanup = () => {
-            bot.flayer._client.removeListener('packet', onPacket);
-        };
-
-        const finishOk = (name) => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            resolve(name);
-        };
-
-        const finishErr = () => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            reject(new Error(`Timeout waiting for slot ${slotIndex} to load`));
-        };
-
-        const tryWindow = () => {
-            const name = peekWindow();
-            if (name) finishOk(name);
-            return !!name;
-        };
-
-        const onPacket = (data, meta) => {
-            if (settled) return;
-            const fromPkt = peekPacket(data, meta);
-            if (fromPkt) {
-                finishOk(fromPkt);
-                return;
-            }
-            tryWindow();
-        };
-
-        bot.flayer._client.on('packet', onPacket);
-
-        const step = () => {
-            if (settled) return;
-            if (tryWindow()) return;
-            if (Date.now() >= deadline) {
-                finishErr();
-                return;
-            }
-            setImmediate(step);
-        };
-
-        setImmediate(step);
-    });
 }
 
 /** @deprecated use waitForWindowSlotName(bot, windowId, slot) */
@@ -425,6 +288,13 @@ async function load(bot, slot, windowId) {
 async function enableOpenWindowListener(bot) {
     try {
         if (bot.flayer._client) {
+            if (!openWindowListener) {
+                log('[Buy] Cannot enable listener: listener not initialized', 'warn');
+                return;
+            }
+            if (openWindowListener) {
+                bot.flayer._client.removeListener('open_window', openWindowListener);
+            }
             bot.flayer._client.on('open_window', openWindowListener);
             log('[Buy] Open window listener enabled', 'sys', true);
         } else {
@@ -439,6 +309,8 @@ async function disableOpenWindowListener(bot) {
     try {
         if (openWindowListener && bot.flayer?._client) {
             bot.flayer._client.removeListener('open_window', openWindowListener);
+            openWindowListener = null;
+            bot.buyWindowBusy = false;
             log('[Buy] Open window listener disabled', 'sys', true);
         }
     } catch (error) {

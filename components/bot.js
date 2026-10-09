@@ -14,6 +14,25 @@ const boughtRegex = /^You purchased (.+?) for ([\d,]+) coins!$/;
 const { findAuctions } = require('./auction/list');
 const { stall } = require('./events/stall');
 const { config } = require('../config.js');
+const { installWindowItemTracker } = require('./windowItems');
+const { installScoreboardTracker } = require('./info/purse');
+const SIGNED_CHAT_PATCHED = Symbol('eternity.signedChatPatched');
+
+function patchSignedChatSalt(client) {
+    if (!client || client[SIGNED_CHAT_PATCHED] || typeof client._signedChat !== 'function') {
+        return false;
+    }
+
+    const crypto = require('crypto');
+    const origSignedChat = client._signedChat.bind(client);
+    client._signedChat = (message, options = {}) => {
+        options.salt = options.salt || crypto.randomBytes(8).readBigInt64BE();
+        return origSignedChat(message, options);
+    };
+    client.chat = client._signedChat;
+    client[SIGNED_CHAT_PATCHED] = true;
+    return true;
+}
 
 async function handler(username) {
     log(`[Bot] Starting handler for ${username}`, "sys");
@@ -68,7 +87,7 @@ async function handler(username) {
                 } catch (error) {
                     log(`[Bot] Delay fetch error: ${error.message}`, "warn");
                 }
-            }, 5 * 60 * 1000); // 5 min interval
+            }, 7 * 60 * 1000); // 5 min interval
             bot.intervals.push(delayInterval);
 
             log(`[Bot] All intervals registered`, "sys", true);
@@ -96,6 +115,8 @@ class Unit {
         let username = information['name'];
         this.flayer = flayer; // Bot obj
         this.packets = makePackets(flayer._client, this);
+        installWindowItemTracker(this);
+        installScoreboardTracker(this);
         this.chat = (text) => {
             // Use mineflayer's chat method which handles 1.19+ signing
             try {
@@ -236,18 +257,20 @@ async function newBot(username) {
                 patchStreams(bot._client);
             });
 
-
-            // Patch _signedChat to use random salt instead of hardcoded 1n.
-            // Hypixel rejects commands with constant salt values.
-            const crypto = require('crypto');
-            bot._client.once('playerJoin', () => {
-                const origSignedChat = bot._client._signedChat;
-                if (origSignedChat) {
-                    bot._client._signedChat = (message, options = {}) => {
-                        options.salt = options.salt || crypto.randomBytes(8).readBigInt64BE();
-                        return origSignedChat(message, options);
-                    };
-                    bot._client.chat = bot._client._signedChat;
+            // Patch _signedChat as soon as minecraft-protocol installs it.
+            // Waiting for playerJoin can leave early /locraw and /skyblock commands
+            // using the default constant salt.
+            if (patchSignedChatSalt(bot._client)) {
+                log(`[Bot] Patched signed chat salt`, "debug", true);
+            }
+            bot._client.on('state', () => {
+                if (patchSignedChatSalt(bot._client)) {
+                    log(`[Bot] Patched signed chat salt`, "debug", true);
+                }
+            });
+            bot._client.once('login', () => {
+                if (patchSignedChatSalt(bot._client)) {
+                    log(`[Bot] Patched signed chat salt`, "debug", true);
                 }
             });
 
@@ -331,7 +354,6 @@ async function newBot(username) {
     });
 }
 
-// Never used - kept for future purse logic
 async function extractInfo(bot) {
     try {
         bot.stats.purse = await extractPurse(bot);

@@ -100,15 +100,45 @@ function getSlotLore(slot) {
 /**
  * Extract the custom_data ExtraAttributes.id from a slot item.
  */
+function unwrapNbtValue(value) {
+    if (value == null) return null;
+    if (typeof value !== 'object') return value;
+    if (value.type === 'string' && value.value != null) return value.value;
+    if (Object.prototype.hasOwnProperty.call(value, 'value')) return unwrapNbtValue(value.value);
+    return value;
+}
+
+function findNestedId(node, depth = 0) {
+    if (!node || depth > 8) return null;
+    if (typeof node === 'string') return node;
+    if (typeof node !== 'object') return null;
+
+    const direct = unwrapNbtValue(node.id);
+    if (typeof direct === 'string') return direct;
+
+    const extraAttributes = unwrapNbtValue(node.ExtraAttributes);
+    if (extraAttributes && extraAttributes !== node) {
+        const nested = findNestedId(extraAttributes, depth + 1);
+        if (nested) return nested;
+    }
+
+    const value = unwrapNbtValue(node.value);
+    if (value && value !== node) {
+        const nested = findNestedId(value, depth + 1);
+        if (nested) return nested;
+    }
+
+    return null;
+}
+
 function getSlotItemTag(slot) {
     if (!slot) return null;
     const customData = slot.componentMap?.get('custom_data')?.data;
     if (customData) {
-        const ea = customData?.value?.ExtraAttributes?.value?.id?.value;
-        if (ea) return ea;
-        if (customData?.ExtraAttributes?.id) return customData.ExtraAttributes.id;
+        const id = findNestedId(customData);
+        if (id) return id;
     }
-    return slot?.nbt?.value?.ExtraAttributes?.value?.id?.value ?? null;
+    return findNestedId(slot?.nbt?.value?.ExtraAttributes) ?? findNestedId(slot?.nbt?.value) ?? null;
 }
 
 module.exports = { BMK, styleText, extractNbtText, getSlotCustomName, getSlotLore, getSlotItemTag };
